@@ -23,6 +23,29 @@ class DefaultExtension extends MProvider {
   }
 
   // ---------------------------------------
+  // SEARCH METHOD
+  // ---------------------------------------
+  async searchPage({ query = "", page = 1 } = {}) {
+    const searchUrl = `/search?keyword=${encodeURIComponent(query)}&page=${page}`;
+    const doc = await this.request(searchUrl);
+    
+    const results = [];
+    doc.select(".novel-item").forEach(item => {
+      const link = item.selectFirst("a").getHref;
+      const name = item.selectFirst("a").attr("title");
+      const imageUrl = item.selectFirst("img").attr("data-src");
+      results.push({
+        name,
+        link,
+        imageUrl,
+      });
+    });
+
+    const hasNextPage = doc.selectFirst("a[rel='next']") !== null;
+    return { results, hasNextPage };
+  }
+
+  // ---------------------------------------
   // DETAIL PAGE (with parallel scraping for all chapters)
   // ---------------------------------------
   async getDetail(url) {
