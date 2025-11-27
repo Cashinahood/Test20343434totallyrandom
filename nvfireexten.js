@@ -5,21 +5,13 @@
     "lang": "en",
     "typeSource": "single",
     "iconUrl": "https://novelfire.net/logo.ico",
-    "dateFormat": "",
-    "dateFormatLocale": "",
-    "isNsfw": false,
-    "hasCloudflare": false,
-    "sourceCodeUrl": "",
-    "apiUrl": "",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "isManga": false,
     "itemType": 2,
     "isFullData": false,
     "appMinVerReq": "0.5.0",
-    "additionalParams": "",
     "sourceCodeLanguage": 1,
-    "notes": "",
-    "pkgPath": "novel/src/en/novelfire.js",
+    "pkgPath": "novel/src/en/novelfire.js"
 }
 
 class DefaultExtension extends MProvider {
@@ -34,159 +26,131 @@ class DefaultExtension extends MProvider {
 
   getHeaders(url) {
     return {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.5",
-      "Accept-Encoding": "gzip, deflate",
-      "Referer": this.source.baseUrl + "/"
+      "User-Agent": "Mozilla/5.0",
+      "Accept": "text/html",
+      "Referer": this.source.baseUrl + "/",
     };
   }
 
   async request(slug) {
-    var url = `${this.source.baseUrl}${slug}`;
-    var body = (await this.client.get(url, { headers: this.getHeaders(url) })).body;
-    return new Document(body);
+    let url = `${this.source.baseUrl}${slug}`;
+    let res = await this.client.get(url, { headers: this.getHeaders(url) });
+    return new Document(res.body);
   }
 
+  // ---------------------------------------
+  // SEARCH (DIRECT)
+  // ---------------------------------------
   async searchPage({
     query = "",
     genres = [],
     status = "all",
     sort = "new",
-    page = 1,
+    page = 1
   } = {}) {
-    function addSlug(para, value) {
-      return `&${para}=${value}`;
-    }
-    function bundleSlug(category, items) {
-      var rd = "";
-      for (var item of items) {
-        rd += `&${category}[]=${item.toLowerCase()}`;
-      }
-      return rd;
-    }
 
-    // Novelfire uses different URL structure for browsing
-    var slug = "/genre-all/sort-new/status-all/all-novel?";
-    slug += `page=${page}`;
-    
+    let slug = "";
+
     if (query) {
-      slug += `&keyword=${query}`;
-    }
-    if (genres.length > 0) {
-      slug += `&genre=${genres.join(',')}`;
-    }
-    if (status !== "all") {
-      slug = slug.replace("status-all", `status-${status}`);
-    }
-    if (sort !== "new") {
-      slug = slug.replace("sort-new", `sort-${sort}`);
+      // REAL keyword search
+      slug = `/search?keyword=${encodeURIComponent(query)}&page=${page}`;
+    } else {
+      // Browsing mode (filters apply)
+      slug = `/genre-all/sort-${sort}/status-${status}/all-novel?page=${page}`;
+      if (genres.length > 0) {
+        slug += `&genre=${genres.join(",")}`;
+      }
     }
 
-    var doc = await this.request(slug);
+    const doc = await this.request(slug);
 
-    var list = [];
-    var hasNextPage = false;
-    
-    // Novelfire novel items structure
-    doc.select("#list-novel .novel-item").forEach((item) => {
-      var linkSection = item.selectFirst("a");
-      var link = linkSection.getHref;
-      var name = linkSection.attr("title");
+    const list = [];
 
-      var imageUrl = linkSection.selectFirst("img").attr("data-src");
+    doc.select("#list-novel .novel-item").forEach(item => {
+      const a = item.selectFirst("a");
+      if (!a) return;
+
+      const link = a.getHref;
+      const name = a.attr("title") || a.text.trim();
+      const imageUrl = a.selectFirst("img").attr("data-src");
+
       list.push({ name, link, imageUrl });
     });
 
-    // Novelfire pagination
-    var nextPage = doc.selectFirst("a[rel='next']");
-    hasNextPage = nextPage !== null;
+    const hasNextPage = doc.selectFirst("a[rel='next']") !== null;
 
     return { list, hasNextPage };
   }
 
   async getPopular(page) {
-    return await this.searchPage({ sort: "popular", page: page });
+    return this.searchPage({ sort: "popular", page });
   }
 
   async getLatestUpdates(page) {
-    return await this.searchPage({ sort: "new", page: page });
+    return this.searchPage({ sort: "new", page });
   }
 
   async search(query, page, filters) {
-    function checkBox(state) {
-      var rd = [];
-      state.forEach((item) => {
-        if (item.state) {
-          rd.push(item.value);
-        }
-      });
-      return rd;
+    // Filters only apply when query is empty
+    if (query) {
+      return this.searchPage({ query, page });
     }
-    function selectFiler(filter) {
+
+    function getBox(state) {
+      return state.filter(i => i.state).map(i => i.value);
+    }
+    function getSelect(filter) {
       return filter.values[filter.state].value;
     }
 
-    var isFiltersAvailable = filters && filters.length !== 0;
-    var genres = isFiltersAvailable ? checkBox(filters[0].state) : [];
-    var status = isFiltersAvailable ? selectFiler(filters[1]) : "all";
-    var sort = isFiltersAvailable ? selectFiler(filters[2]) : "new";
+    const genres = filters ? getBox(filters[0].state) : [];
+    const status = filters ? getSelect(filters[1]) : "all";
+    const sort = filters ? getSelect(filters[2]) : "new";
 
-    return await this.searchPage({ query, genres, status, sort, page });
+    return this.searchPage({ query, genres, status, sort, page });
   }
 
+  // ---------------------------------------
+  // DETAIL PAGE
+  // ---------------------------------------
   async getDetail(url) {
-    function statusCode(status) {
-      return (
-        {
-          "Ongoing": 0,
-          "Completed": 1,
-        }[status] ?? 5
-      );
-    }
-    
-    var baseUrl = this.source.baseUrl;
-    var slug = url.replace(baseUrl, "");
+    const slug = url.replace(this.source.baseUrl, "");
+    const doc = await this.request(slug);
 
-    var doc = await this.request(slug);
+    const name = doc.selectFirst("h1.novel-title").text.trim();
+    const imageUrl = doc.selectFirst(".novel-cover img").attr("data-src");
 
-    // Novelfire detail page structure
-    var name = doc.selectFirst("h1.novel-title").text;
-    var imageUrl = doc.selectFirst(".novel-cover img").attr("data-src");
-    
     // Description
-    var description = "";
-    var descElements = doc.selectFirst(".content.expand-wrapper").select("p");
-    descElements.forEach((p) => {
+    let description = "";
+    doc.select(".content.expand-wrapper p").forEach(p => {
       description += p.text.trim() + " ";
     });
     description = description.trim();
 
     // Genres
-    var genre = [];
-    doc.select(".categories a.property-item").forEach((a) => {
-      genre.push(a.text.trim());
-    });
+    const genre = [];
+    doc.select(".categories a.property-item").forEach(a =>
+      genre.push(a.text.trim())
+    );
 
     // Status
-    var status = 5;
-    var statusElement = doc.selectFirst("strong.ongoing, strong.completed");
-    if (statusElement) {
-      status = statusCode(statusElement.text.trim());
+    let status = 5;
+    const st = doc.selectFirst("strong.ongoing, strong.completed");
+    if (st) {
+      const s = st.text.trim();
+      status = s === "Ongoing" ? 0 : s === "Completed" ? 1 : 5;
     }
 
-    // Chapters
-    var chapters = [];
-    var chaptersLink = doc.selectFirst("a.chapter-latest-container").getHref;
-    var chapDoc = await this.request(chaptersLink.replace(baseUrl, ""));
-    
-    chapDoc.select(".chapter-list a").forEach((item) => {
-      var chapLink = item.getHref;
-      var chapName = item.attr("title");
+    // Chapters (Novelfire lists chapters on dedicated page)
+    let chapters = [];
+    const chaptersPageLink = doc.selectFirst("a.chapter-latest-container").getHref;
+    const chapDoc = await this.request(chaptersPageLink.replace(this.source.baseUrl, ""));
+
+    chapDoc.select(".chapter-list a").forEach(item => {
       chapters.push({
-        name: chapName,
-        url: chapLink,
-        dateUpload: "", // Novelfire doesn't show dates in chapter list
+        name: item.attr("title") || item.text.trim(),
+        url: item.getHref,
+        dateUpload: ""
       });
     });
 
@@ -197,49 +161,48 @@ class DefaultExtension extends MProvider {
       link: url,
       status,
       genre,
-      chapters,
+      chapters
     };
   }
 
+  // ---------------------------------------
+  // CHAPTER CONTENT
+  // ---------------------------------------
   async getHtmlContent(name, url) {
-    var doc = await this.request(url.replace(this.source.baseUrl, ""));
+    const doc = await this.request(url.replace(this.source.baseUrl, ""));
     return this.cleanHtmlContent(doc);
   }
 
-  async cleanHtmlContent(html) {
-    var contentDiv = html.selectFirst("#content");
-    var title = contentDiv.selectFirst("h4").text.trim();
-    var content = "";
-    
-    contentDiv.select("p").forEach((item) => {
-      var text = item.text.trim();
-      // Filter out ads and source notes
-      if (text && 
-          !text.includes("novelfire.net") && 
-          !text.includes("disable-blocker") &&
-          !item.select("img").length) {
+  async cleanHtmlContent(doc) {
+    const div = doc.selectFirst("#content");
+
+    const title = div.selectFirst("h4").text.trim();
+
+    let content = "";
+    div.select("p").forEach(p => {
+      const text = p.text.trim();
+      if (
+        text &&
+        !text.includes("novelfire.net") &&
+        !text.includes("disable-blocker") &&
+        !p.select("img").length
+      ) {
         content += text + " <br><br>";
       }
     });
-    
+
     return `<h2>${title}</h2><hr><br>${content}`;
   }
 
+  // ---------------------------------------
+  // FILTERS (for browsing only)
+  // ---------------------------------------
   getFilterList() {
-    function formateState(type_name, items, values) {
-      var state = [];
-      for (var i = 0; i < items.length; i++) {
-        state.push({ type_name: type_name, name: items[i], value: values[i] });
-      }
-      return state;
+    function makeState(type, names, vals) {
+      return names.map((n, i) => ({ type_name: type, name: n, value: vals[i] }));
     }
 
-    var filters = [];
-    var items = [];
-    var values = [];
-
-    // Genres - Based on Novelfire categories
-    items = [
+    const genres = [
       "Action", "Adventure", "Adult", "Anime", "Arts",
       "Comedy", "Drama", "Eastern", "Ecchi", "Fan-fiction",
       "Fantasy", "Gender Bender", "Harem", "Historical", "Horror",
@@ -253,40 +216,32 @@ class DefaultExtension extends MProvider {
       "Xianxia", "Xuanhuan", "Yaoi", "Yuri"
     ];
 
-    values = items.map(item => 
-      item.toLowerCase()
-          .replace(/\+/g, 'plus')
-          .replace(/\s+/g, '-')
-          .replace(/[^\w-]/g, '')
+    const genreVals = genres.map(g =>
+      g.toLowerCase()
+        .replace(/\+/g, "plus")
+        .replace(/\s+/g, "-")
+        .replace(/[^\w-]/g, "")
     );
 
-    filters.push({
-      type_name: "GroupFilter",
-      name: "Genres",
-      state: formateState("CheckBox", items, values),
-    });
-
-    // Status
-    items = ["All", "Ongoing", "Completed"];
-    values = ["all", "ongoing", "completed"];
-    filters.push({
-      type_name: "SelectFilter",
-      name: "Status",
-      state: 0,
-      values: formateState("SelectOption", items, values),
-    });
-
-    // Sort order - Novelfire specific
-    items = ["New", "Popular", "Rating", "Name", "Views"];
-    values = ["new", "popular", "rating", "name", "views"];
-    filters.push({
-      type_name: "SelectFilter",
-      name: "Order by",
-      state: 0,
-      values: formateState("SelectOption", items, values),
-    });
-
-    return filters;
+    return [
+      {
+        type_name: "GroupFilter",
+        name: "Genres",
+        state: makeState("CheckBox", genres, genreVals)
+      },
+      {
+        type_name: "SelectFilter",
+        name: "Status",
+        state: 0,
+        values: makeState("SelectOption", ["All", "Ongoing", "Completed"], ["all", "ongoing", "completed"])
+      },
+      {
+        type_name: "SelectFilter",
+        name: "Order by",
+        state: 0,
+        values: makeState("SelectOption", ["New", "Popular", "Rating", "Name", "Views"], ["new", "popular", "rating", "name", "views"])
+      }
+    ];
   }
 
   getSourcePreferences() {
