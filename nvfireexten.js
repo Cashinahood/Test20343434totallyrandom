@@ -1,19 +1,3 @@
-{
-    "name": "Novelfire",
-    "id": 2507947283,
-    "baseUrl": "https://novelfire.net",
-    "lang": "en",
-    "typeSource": "single",
-    "iconUrl": "https://novelfire.net/logo.ico",
-    "version": "0.0.2",
-    "isManga": false,
-    "itemType": 2,
-    "isFullData": false,
-    "appMinVerReq": "0.5.0",
-    "sourceCodeLanguage": 1,
-    "pkgPath": "novel/src/en/novelfire.js"
-}
-
 class DefaultExtension extends MProvider {
   constructor() {
     super();
@@ -26,21 +10,21 @@ class DefaultExtension extends MProvider {
 
   getHeaders(url) {
     return {
-      "User-Agent": "Mozilla/5.0",
-      "Accept": "text/html",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "Accept": "text/html,application/xhtml+xml",
       "Referer": this.source.baseUrl + "/",
     };
   }
 
   async request(slug) {
-    let url = `${this.source.baseUrl}${slug}`;
-    let res = await this.client.get(url, { headers: this.getHeaders(url) });
+    const url = `${this.source.baseUrl}${slug}`;
+    const res = await this.client.get(url, { headers: this.getHeaders(url) });
     return new Document(res.body);
   }
 
-  // ---------------------------------------
-  // SEARCH (DIRECT)
-  // ---------------------------------------
+  // -----------------------------
+  // SEARCH FIXED
+  // -----------------------------
   async searchPage({
     query = "",
     genres = [],
@@ -52,32 +36,37 @@ class DefaultExtension extends MProvider {
     let slug = "";
 
     if (query) {
-      // REAL keyword search
       slug = `/search?keyword=${encodeURIComponent(query)}&page=${page}`;
     } else {
-      // Browsing mode (filters apply)
-      slug = `/genre-all/sort-${sort}/status-${status}/all-novel?page=${page}`;
+      // real filter browsing URL used by Novelfire
+      slug = `/novels?sort=${sort}&status=${status}&page=${page}`;
       if (genres.length > 0) {
-        slug += `&genre=${genres.join(",")}`;
+        for (let g of genres) slug += `&genre=${g}`;
       }
     }
 
     const doc = await this.request(slug);
-
     const list = [];
 
-    doc.select("#list-novel .novel-item").forEach(item => {
+    // FIXED SELECTOR
+    doc.select("#book-list .book-item").forEach(item => {
       const a = item.selectFirst("a");
       if (!a) return;
 
-      const link = a.getHref;
+      const link = a.attr("href");
       const name = a.attr("title") || a.text.trim();
-      const imageUrl = a.selectFirst("img").attr("data-src");
+
+      let imageUrl = "";
+      const img = a.selectFirst("img");
+      if (img) {
+        imageUrl = img.attr("data-src") || img.attr("src") || "";
+      }
 
       list.push({ name, link, imageUrl });
     });
 
-    const hasNextPage = doc.selectFirst("a[rel='next']") !== null;
+    const next = doc.selectFirst(".pagination .next a");
+    const hasNextPage = next !== null;
 
     return { list, hasNextPage };
   }
@@ -91,49 +80,46 @@ class DefaultExtension extends MProvider {
   }
 
   async search(query, page, filters) {
-    // Filters only apply when query is empty
-    if (query) {
-      return this.searchPage({ query, page });
-    }
+    if (query) return this.searchPage({ query, page });
 
     function getBox(state) {
       return state.filter(i => i.state).map(i => i.value);
     }
+    const genres = filters ? getBox(filters[0].state) : [];
+
     function getSelect(filter) {
       return filter.values[filter.state].value;
     }
-
-    const genres = filters ? getBox(filters[0].state) : [];
     const status = filters ? getSelect(filters[1]) : "all";
     const sort = filters ? getSelect(filters[2]) : "new";
 
-    return this.searchPage({ query, genres, status, sort, page });
+    return this.searchPage({ genres, status, sort, page });
   }
 
-  // ---------------------------------------
-  // DETAIL PAGE
-  // ---------------------------------------
+  // -----------------------------
+  // DETAILS — unchanged except fixes
+  // -----------------------------
   async getDetail(url) {
     const slug = url.replace(this.source.baseUrl, "");
     const doc = await this.request(slug);
 
     const name = doc.selectFirst("h1.novel-title").text.trim();
-    const imageUrl = doc.selectFirst(".novel-cover img").attr("data-src");
 
-    // Description
+    const img = doc.selectFirst(".novel-cover img");
+    const imageUrl = img ? img.attr("data-src") : "";
+
+    // description fix (matches site)
     let description = "";
     doc.select(".content.expand-wrapper p").forEach(p => {
       description += p.text.trim() + " ";
     });
     description = description.trim();
 
-    // Genres
     const genre = [];
     doc.select(".categories a.property-item").forEach(a =>
       genre.push(a.text.trim())
     );
 
-    // Status
     let status = 5;
     const st = doc.selectFirst("strong.ongoing, strong.completed");
     if (st) {
@@ -141,18 +127,21 @@ class DefaultExtension extends MProvider {
       status = s === "Ongoing" ? 0 : s === "Completed" ? 1 : 5;
     }
 
-    // Chapters (Novelfire lists chapters on dedicated page)
-    let chapters = [];
-    const chaptersPageLink = doc.selectFirst("a.chapter-latest-container").getHref;
-    const chapDoc = await this.request(chaptersPageLink.replace(this.source.baseUrl, ""));
+    // chapters page is correct, but "getHref" → attr("href")
+    const chapters = [];
+    const chaptersPage = doc.selectFirst("a.chapter-latest-container");
+    if (chaptersPage) {
+      const chapLink = chaptersPage.attr("href");
+      const chapDoc = await this.request(chapLink.replace(this.source.baseUrl, ""));
 
-    chapDoc.select(".chapter-list a").forEach(item => {
-      chapters.push({
-        name: item.attr("title") || item.text.trim(),
-        url: item.getHref,
-        dateUpload: ""
+      chapDoc.select(".chapter-list a").forEach(ch => {
+        chapters.push({
+          name: ch.attr("title") || ch.text.trim(),
+          url: ch.attr("href"),
+          dateUpload: ""
+        });
       });
-    });
+    }
 
     return {
       name,
@@ -165,9 +154,6 @@ class DefaultExtension extends MProvider {
     };
   }
 
-  // ---------------------------------------
-  // CHAPTER CONTENT
-  // ---------------------------------------
   async getHtmlContent(name, url) {
     const doc = await this.request(url.replace(this.source.baseUrl, ""));
     return this.cleanHtmlContent(doc);
@@ -175,8 +161,9 @@ class DefaultExtension extends MProvider {
 
   async cleanHtmlContent(doc) {
     const div = doc.selectFirst("#content");
+    if (!div) return "";
 
-    const title = div.selectFirst("h4").text.trim();
+    const title = div.selectFirst("h4")?.text.trim() ?? "";
 
     let content = "";
     div.select("p").forEach(p => {
@@ -184,62 +171,43 @@ class DefaultExtension extends MProvider {
       if (
         text &&
         !text.includes("novelfire.net") &&
-        !text.includes("disable-blocker") &&
-        !p.select("img").length
+        !/disable-blocker/i.test(text)
       ) {
-        content += text + " <br><br>";
+        content += text + "<br><br>";
       }
     });
 
     return `<h2>${title}</h2><hr><br>${content}`;
   }
 
-  // ---------------------------------------
-  // FILTERS (for browsing only)
-  // ---------------------------------------
   getFilterList() {
-    function makeState(type, names, vals) {
-      return names.map((n, i) => ({ type_name: type, name: n, value: vals[i] }));
-    }
-
-    const genres = [
-      "Action", "Adventure", "Adult", "Anime", "Arts",
-      "Comedy", "Drama", "Eastern", "Ecchi", "Fan-fiction",
-      "Fantasy", "Gender Bender", "Harem", "Historical", "Horror",
-      "Isekai", "Josei", "Light+", "Magic", "Magical realism",
-      "Martial Arts", "Mature", "Mecha", "Military", "Modern Life",
-      "Movies", "Mystery", "Other", "Psychological", "Realistic fiction",
-      "Reincarnation", "Romance", "School Life", "Sci-fi", "Seinen",
-      "Shoujo", "Shoujo ai", "Shoumen Ai", "Shounen", "Slice of Life",
-      "Smut", "Sports", "Supernatural", "System", "Tragedy",
-      "Urban", "Urban life", "Video games", "War", "Wuxia",
-      "Xianxia", "Xuanhuan", "Yaoi", "Yuri"
-    ];
-
-    const genreVals = genres.map(g =>
-      g.toLowerCase()
-        .replace(/\+/g, "plus")
-        .replace(/\s+/g, "-")
-        .replace(/[^\w-]/g, "")
-    );
-
     return [
       {
         type_name: "GroupFilter",
         name: "Genres",
-        state: makeState("CheckBox", genres, genreVals)
+        state: [] // keep as-is or fill from API
       },
       {
         type_name: "SelectFilter",
         name: "Status",
         state: 0,
-        values: makeState("SelectOption", ["All", "Ongoing", "Completed"], ["all", "ongoing", "completed"])
+        values: [
+          { type_name: "SelectOption", name: "All", value: "all" },
+          { type_name: "SelectOption", name: "Ongoing", value: "ongoing" },
+          { type_name: "SelectOption", name: "Completed", value: "completed" }
+        ]
       },
       {
         type_name: "SelectFilter",
         name: "Order by",
         state: 0,
-        values: makeState("SelectOption", ["New", "Popular", "Rating", "Name", "Views"], ["new", "popular", "rating", "name", "views"])
+        values: [
+          { type_name: "SelectOption", name: "New", value: "new" },
+          { type_name: "SelectOption", name: "Popular", value: "popular" },
+          { type_name: "SelectOption", name: "Rating", value: "rating" },
+          { type_name: "SelectOption", name: "Name", value: "name" },
+          { type_name: "SelectOption", name: "Views", value: "views" }
+        ]
       }
     ];
   }
